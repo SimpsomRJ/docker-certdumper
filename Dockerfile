@@ -1,19 +1,24 @@
-FROM docker:latest
+FROM golang:1-alpine as builder
 
-RUN apk update
-RUN apk -U --no-cache add inotify-tools util-linux bash openssl
-RUN apk --no-cache upgrade
+RUN apk --update upgrade \
+    && apk --no-cache --no-progress add git make gcc musl-dev ca-certificates tzdata
 
-COPY bin/dump.sh /usr/bin/dump
-COPY bin/healthcheck.sh /usr/bin/healthcheck
+WORKDIR /go/src/github.com/ldez/traefik-certs-dumper
 
-RUN ["chmod", "+x", "/usr/bin/dump", "/usr/bin/healthcheck"]
+ENV GO111MODULE on
+COPY go.mod go.sum ./
+RUN go mod download
 
-HEALTHCHECK --interval=30s --timeout=10s --retries=5 CMD ["/usr/bin/healthcheck"]
+COPY . .
+RUN GOARCH={{ .GoARCH }} GOARM={{ .GoARM }} make build
 
-COPY --from=ldez/traefik-certs-dumper:v2.7.0 /usr/bin/traefik-certs-dumper /usr/bin/traefik-certs-dumper
+FROM {{ .RuntimeImage }}
 
-VOLUME ["/traefik"]
-VOLUME ["/output"]
+# Not supported for multi-arch without Buildkit or QEMU
+#RUN apk --update upgrade \
+#    && apk --no-cache --no-progress add ca-certificates
 
-ENTRYPOINT ["/usr/bin/dump"]
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=builder /go/src/github.com/ldez/traefik-certs-dumper/traefik-certs-dumper /usr/bin/traefik-certs-dumper
+
+ENTRYPOINT ["/usr/bin/traefik-certs-dumper"]
