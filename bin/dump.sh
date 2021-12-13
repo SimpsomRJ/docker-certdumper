@@ -118,12 +118,14 @@ combine_pem() {
           if [[ -f ${outputdir}/${i}/cert.pem && -f ${outputdir}/${i}/key.pem ]]; then
             log "Combining key and cert for domain ${i} to single pem with name ${i}/${COMBINED_PEM}"
             cat ${outputdir}/"${i}"/cert.pem ${outputdir}/"${i}"/key.pem > ${outputdir}/"${i}"/"${COMBINED_PEM}"
+            /usr/bin/openssl pkcs12 -export -out ${outputdir}/"${i}"/cert.pfx -inkey ${outputdir}/"${i}"/key.pem -in ${outputdir}/"${i}"/cert.pem -passout pass:
           fi
         done
       else
         if [[ -f ${outputdir}/cert.pem && -f ${outputdir}/key.pem ]]; then
           log "Combining key and cert to single pem with name ${COMBINED_PEM}"
           cat ${outputdir}/cert.pem ${outputdir}/key.pem > ${outputdir}/"${COMBINED_PEM}"
+          /usr/bin/openssl pkcs12 -export -out ${outputdir}/cert.pfx -inkey ${outputdir}/key.pem -in ${outputdir}/cert.pem -passout pass:
         fi
       fi
     fi
