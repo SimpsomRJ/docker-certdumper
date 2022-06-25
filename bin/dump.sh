@@ -4,6 +4,19 @@ workdir=/tmp/work
 outputdir=/output
 re='^[0-9]+$'
 
+acme_file_path=${ACME_FILE_PATH:-/traefik/acme.json}
+posthook_file_path=${POST_HOOK_FILE_PATH:-/hook/hook.sh}
+certificate_file_name=${CERTIFICATE_FILE_NAME:-cert}
+certificate_file_ext=${CERTIFICATE_FILE_EXT:-.pem}
+certificate_file=${certificate_file_name}${certificate_file_ext}
+privatekey_file_name=${PRIVATE_KEY_FILE_NAME:-key}
+privatekey_file_ext=${PRIVATE_KEY_FILE_EXT:-.pem}
+privatekey_file=${privatekey_file_name}${privatekey_file_ext}
+rsakey_file_name=${RSA_KEY_FILE_NAME:-rsakey}
+rsakey_file_ext=${RSA_KEY_FILE_EXT:-.pem}
+rsakey_file=${rsakey_file_name}${rsakey_file_ext}
+
+
 ###############################################
 ####             DUMPING LOGIC             ####
 ###############################################
@@ -15,34 +28,33 @@ dump() {
   log "Dumping certificates"
   traefik-certs-dumper file \
     --version v2 \
-    --crt-name "cert" \
-    --crt-ext ".pem" \
-    --key-name "key" \
-    --key-ext ".pem" \
+    --crt-name "${certificate_file_name}" \
+    --crt-ext "${certificate_file_ext}" \
+    --key-name "${privatekey_file_name}" \
+    --key-ext "${privatekey_file_ext}" \
     --domain-subdir \
     --dest /tmp/work \
-    --source /traefik/acme.json >/dev/null
+    --source "${acme_file_path}" >/dev/null
 
   if [[ -z "${DOMAIN}" ]]; then
     local diff_available=false
-    local workdir_subdirs=(${workdir}/*/)
-    for subdir in "${workdir_subdirs[@]}" ; do
-      local i=$( basename "${subdir}" / )
+    local workdir_subdirs=("${workdir}"/*/)
+    for subdir in "${workdir_subdirs[@]}"; do
+      local i=$(basename "${subdir}" /)
       # Don't extract "private" because it contains Let's Encrypt key
       if [[ "${i}" != "private" ]]; then
         if
-          [[ -f ${workdir}/${i}/cert.pem && -f ${workdir}/${i}/key.pem ]]
+          [[ -f ${workdir}/${i}/${certificate_file} && -f ${workdir}/${i}/${privatekey_file} ]]
         then
-          if [[ -f ${outputdir}/${i}/cert.pem && -f ${outputdir}/${i}/key.pem ]] && \
-            diff -q "${workdir}/$i/cert.pem" "${outputdir}/$i/cert.pem" >/dev/null && \
-            diff -q "${workdir}/$i/key.pem" "${outputdir}/$i/key.pem" >/dev/null
-          then
+          if [[ -f ${outputdir}/${i}/${certificate_file} && -f ${outputdir}/${i}/${privatekey_file} ]] &&
+            diff -q "${workdir}/$i/${certificate_file}" "${outputdir}/$i/${certificate_file}" >/dev/null &&
+            diff -q "${workdir}/$i/${privatekey_file}" "${outputdir}/$i/${privatekey_file}" >/dev/null; then
             log "Certificate and key for '${i}' still up to date, doing nothing"
           else
             log "Certificate or key for '${i}' differ, updating"
             diff_available=true
             local dir=${outputdir}/${i}
-            mkdir -p "${dir}" && mv ${workdir}/${i}/*.pem "${dir}"
+            mkdir -p "${dir}" && mv ${workdir}/"${i}"/"${certificate_file}" ${workdir}/"${i}"/"${privatekey_file}" "${dir}"
           fi
         else
           err "Certificates for domain '${i}' don't exist. Omitting..."
@@ -51,27 +63,29 @@ dump() {
     done
 
     if [[ "${diff_available}" = true ]]; then
+      combine_pkcs12
       combine_pem
+      convert_keys_to_rsa
       change_ownership
+      post_hook
       restart_containers
       restart_services
     fi
   elif [[ "${#DOMAINS[@]}" -gt 1 ]]; then
     local diff_available=false
-    for i in "${DOMAINS[@]}" ; do
+    for i in "${DOMAINS[@]}"; do
       if
-        [[ -f ${workdir}/${i}/cert.pem && -f ${workdir}/${i}/key.pem ]]
+        [[ -f ${workdir}/${i}/${certificate_file} && -f ${workdir}/${i}/${privatekey_file} ]]
       then
-        if [[ -f ${outputdir}/${i}/cert.pem && -f ${outputdir}/${i}/key.pem ]] && \
-           diff -q "${workdir}/$i/cert.pem" "${outputdir}/$i/cert.pem" >/dev/null && \
-           diff -q "${workdir}/$i/key.pem" "${outputdir}/$i/key.pem" >/dev/null
-        then
+        if [[ -f ${outputdir}/${i}/${certificate_file} && -f ${outputdir}/${i}/${privatekey_file} ]] &&
+          diff -q "${workdir}/$i/${certificate_file}" "${outputdir}/$i/${certificate_file}" >/dev/null &&
+          diff -q "${workdir}/$i/${privatekey_file}" "${outputdir}/$i/${privatekey_file}" >/dev/null; then
           log "Certificate and key for '${i}' still up to date, doing nothing"
         else
           log "Certificate or key for '${i}' differ, updating"
           diff_available=true
           local dir=${outputdir}/${i}
-          mkdir -p "${dir}" && mv ${workdir}/${i}/*.pem "${dir}"
+          mkdir -p "${dir}" && mv ${workdir}/"${i}"/"${certificate_file}" ${workdir}/"${i}"/"${privatekey_file}" "${dir}"
         fi
       else
         err "Certificates for domain '${i}' don't exist. Omitting..."
@@ -79,25 +93,30 @@ dump() {
     done
 
     if [[ "${diff_available}" = true ]]; then
+      combine_pkcs12
       combine_pem
+      convert_keys_to_rsa
       change_ownership
+      post_hook
       restart_containers
       restart_services
     fi
   else
     if
-      [[ -f ${workdir}/${DOMAINS[0]}/cert.pem && -f ${workdir}/${DOMAINS[0]}/key.pem ]]
+      [[ -f ${workdir}/${DOMAINS[0]}/${certificate_file} && -f ${workdir}/${DOMAINS[0]}/${privatekey_file} ]]
     then
-      if [[ -f ${outputdir}/cert.pem && -f ${outputdir}/key.pem ]] && \
-         diff -q "${workdir}/${DOMAINS[0]}/cert.pem" "${outputdir}/cert.pem" >/dev/null && \
-         diff -q "${workdir}/${DOMAINS[0]}/key.pem" "${outputdir}/key.pem" >/dev/null
-      then
+      if [[ -f ${outputdir}/${certificate_file} && -f ${outputdir}/${privatekey_file} ]] &&
+        diff -q "${workdir}/${DOMAINS[0]}/${certificate_file}" "${outputdir}/${certificate_file}" >/dev/null &&
+        diff -q "${workdir}/${DOMAINS[0]}/${privatekey_file}" "${outputdir}/${privatekey_file}" >/dev/null; then
         log "Certificate and key for '${DOMAINS[0]}' still up to date, doing nothing"
       else
         log "Certificate or key for '${DOMAINS[0]}' differ, updating"
-        mv ${workdir}/${DOMAINS[0]}/*.pem "${outputdir}/"
+        mv ${workdir}/"${DOMAINS[0]}"/"${certificate_file}" ${workdir}/"${DOMAINS[0]}"/"${privatekey_file}" "${outputdir}/"
+        combine_pkcs12
         combine_pem
+        convert_keys_to_rsa
         change_ownership
+        post_hook
         restart_containers
         restart_services
       fi
@@ -114,20 +133,66 @@ combine_pem() {
       log "COMBINED_PEM=${COMBINED_PEM} does not have .pem at end of filename."
     else
       if [[ "${#DOMAINS[@]}" -gt 1 ]]; then
-        for i in "${DOMAINS[@]}" ; do
-          if [[ -f ${outputdir}/${i}/cert.pem && -f ${outputdir}/${i}/key.pem ]]; then
+        for i in "${DOMAINS[@]}"; do
+          if [[ -f ${outputdir}/${i}/${certificate_file} && -f ${outputdir}/${i}/${privatekey_file} ]]; then
             log "Combining key and cert for domain ${i} to single pem with name ${i}/${COMBINED_PEM}"
-            cat ${outputdir}/"${i}"/cert.pem ${outputdir}/"${i}"/key.pem > ${outputdir}/"${i}"/"${COMBINED_PEM}"
-            /usr/bin/openssl pkcs12 -export -out ${outputdir}/"${i}"/cert.pfx -inkey ${outputdir}/"${i}"/key.pem -in ${outputdir}/"${i}"/cert.pem -passout pass:
+            cat ${outputdir}/"${i}"/"${certificate_file}" ${outputdir}/"${i}"/"${privatekey_file}" >${outputdir}/"${i}"/"${COMBINED_PEM}"
           fi
         done
       else
-        if [[ -f ${outputdir}/cert.pem && -f ${outputdir}/key.pem ]]; then
+        if [[ -f ${outputdir}/${certificate_file} && -f ${outputdir}/${privatekey_file} ]]; then
           log "Combining key and cert to single pem with name ${COMBINED_PEM}"
-          cat ${outputdir}/cert.pem ${outputdir}/key.pem > ${outputdir}/"${COMBINED_PEM}"
-          /usr/bin/openssl pkcs12 -export -out ${outputdir}/cert.pfx -inkey ${outputdir}/key.pem -in ${outputdir}/cert.pem -passout pass:
+          cat ${outputdir}/"${certificate_file}" ${outputdir}/"${privatekey_file}" >${outputdir}/"${COMBINED_PEM}"
         fi
       fi
+    fi
+  fi
+}
+
+combine_pkcs12() {
+  if [[ "${COMBINE_PKCS12}" != yes ]]; then
+    return
+  fi
+
+  if [[ -z ${PKCS12_PASSWORD+x} && -n ${PKCS12_PASSWORD_FILE+x} ]]; then
+    PKCS12_PASSWORD=$(cat "$PKCS12_PASSWORD_FILE")
+  fi
+
+  if [[ -z "${DOMAIN}" || "${#DOMAINS[@]}" -gt 1 ]]; then
+    local outputdir_subdirs=("${outputdir}"/*/)
+    for subdir in "${outputdir_subdirs[@]}"; do
+      local i=$(basename "${subdir}" /)
+      if [[ -f ${outputdir}/${i}/${certificate_file} && -f ${outputdir}/${i}/${privatekey_file} ]]; then
+        log "Combining key and cert for domain ${i} to pkcs12 file"
+        openssl pkcs12 -export -in ${outputdir}/"${i}"/"${certificate_file}" -inkey ${outputdir}/"${i}"/"${privatekey_file}" -out ${outputdir}/"${i}"/cert.p12 -password pass:"${PKCS12_PASSWORD}"
+      fi
+    done
+  else
+    if [[ -f ${outputdir}/${certificate_file} && -f ${outputdir}/${privatekey_file} ]]; then
+      log "Combining key and cert to PKCS12 file"
+      openssl pkcs12 -export -in ${outputdir}/"${certificate_file}" -inkey ${outputdir}/"${privatekey_file}" -out ${outputdir}/cert.p12 -password pass:"${PKCS12_PASSWORD}"
+    fi
+  fi
+}
+
+convert_keys_to_rsa() {
+  if [[ "${CONVERT_KEYS_TO_RSA}" != yes ]]; then
+    return
+  fi
+
+  if [[ -z "${DOMAIN}" || "${#DOMAINS[@]}" -gt 1 ]]; then
+    local outputdir_subdirs=(${outputdir}/*/)
+    for subdir in "${outputdir_subdirs[@]}"; do
+      local i=$(basename "${subdir}" /)
+      if [[ -f "${outputdir}/${i}/${certificate_file}" && -f "${outputdir}/${i}/${privatekey_file}" ]]; then
+        log "Converting key for domain ${i} to RSA key file"
+        openssl rsa -in "${outputdir}/${i}/${privatekey_file}" -out "${outputdir}/${i}/${rsakey_file}"
+      fi
+    done
+  else
+    if [[ -f "${outputdir}/${certificate_file}" && -f "${outputdir}/${privatekey_file}" ]]; then
+      log "Converting key to RSA key file"
+      openssl rsa -in ${outputdir}/"${i}"/"${privatekey_file}" -out ${outputdir}/"${i}"/"${rsakey_file}"
     fi
   fi
 }
@@ -137,19 +202,31 @@ change_ownership() {
     if [[ ! "${OVERRIDE_UID}" =~ $re || ! "${OVERRIDE_GID}" =~ $re ]]; then
       #Check on UID
       if [[ ! "${OVERRIDE_UID}" =~ $re ]]; then
-          log "OVERRIDE_UID=${OVERRIDE_UID} is not an integer."
+        log "OVERRIDE_UID=${OVERRIDE_UID} is not an integer."
       fi
       #Check on GID
       if [[ ! "${OVERRIDE_GID}" =~ $re ]]; then
-          log "OVERRIDE_GID=${OVERRIDE_GID} is not an integer."
+        log "OVERRIDE_GID=${OVERRIDE_GID} is not an integer."
       fi
       log "Combination ${OVERRIDE_UID}:${OVERRIDE_GID} is invalid. Skipping file ownership change..."
     else
       log "Changing ownership of certificates and keys"
-      find ${outputdir}/ -type f -name "*.pem" | while read -r f; do
+      find ${outputdir}/ -type f \( -name "*${certificate_file_ext}" -o -name "*${privatekey_file_ext}" -o -name "*.p12" \) | while read -r f; do
         chown "${OVERRIDE_UID}":"${OVERRIDE_GID}" "$f"
         chmod g+r "$f"
       done
+    fi
+  fi
+}
+
+post_hook() {
+  if [[ -x ${posthook_file_path} ]]; then
+    log "Post-hook script file found: ${posthook_file_path}. Executing"
+    
+    if sh "${posthook_file_path}"; then
+      log "Post-hook script file ${posthook_file_path} exited successfully."
+    else
+      err "Post-hook script file ${posthook_file_path} exited with error. Please check logs or your post-hook script for errors."
     fi
   fi
 }
@@ -222,18 +299,17 @@ log() {
   echo "[$(date +'%Y-%m-%dT%H:%M:%S%z')]: $*"
 }
 
-check_docker_cmd() {
-  local __ret=$1
+check_cmd() {
+  local cmd=$1
 
-  [[ -x "$(command -v docker)" ]]
+  #check command exist, but no output
+  command -v "$cmd" >/dev/null 
+
   local _result=$?
-
-  if (( _result == 1 )); then
-
-
-    unset __ret
+  if ((_result == 1)); then
+    echo false
   else
-    eval "$__ret=true"
+    echo true
   fi
 }
 
@@ -309,22 +385,21 @@ parse_commandline() {
 
 parse_commandline "$@"
 
-_docker_available=
-check_docker_cmd _docker_available
+_docker_available=$(check_cmd docker)
 
 if [[ "${_docker_available}" = true ]]; then
   if [[ -z "${_arg_restart_containers}" ]]; then
     log "--restart-containers is empty. Won't attempt to restart containers."
   else
     log "Got value of --restart-containers: ${_arg_restart_containers}. Splitting values."
-    IFS=',' read -ra CONTAINERS <<< "$_arg_restart_containers"
+    IFS=',' read -ra CONTAINERS <<<"$_arg_restart_containers"
     log "Values split! Got '${CONTAINERS[@]}'"
   fi
   if [[ -z "${_arg_restart_services}" ]]; then
     log "--restart-services is empty. Won't attempt to restart services."
   else
     log "Got value of --restart-services: ${_arg_restart_services}. Splitting values."
-    IFS=',' read -ra SERVICES <<< "$_arg_restart_services"
+    IFS=',' read -ra SERVICES <<<"$_arg_restart_services"
     log "Values split! Got '${SERVICES[@]}'"
   fi
 else
@@ -338,14 +413,23 @@ if [[ -z "${DOMAIN}" ]]; then
   log "Environment variable DOMAIN empty. Will dump all certificates possible..."
 else
   log "Got value of DOMAIN: ${DOMAIN}. Splitting values."
-  IFS=',' read -ra DOMAINS <<< "$DOMAIN"
+  IFS=',' read -ra DOMAINS <<<"$DOMAIN"
   log "Values split! Got '${DOMAINS[@]}'"
 fi
+
+log "ACME file path: $acme_file_path"
 
 mkdir -p ${workdir}
 dump
 
 while true; do
-  inotifywait -qq -e modify /traefik/acme.json
-  dump
+  if [[ -f ${acme_file_path} ]]; then
+    inotifywait -qq -e modify "${acme_file_path}"  
+    if [[ $? -eq 0 ]]; then
+      dump
+    fi
+  else
+    log "${acme_file_path} is not a file. Retrying..."
+    sleep 10
+  fi
 done
