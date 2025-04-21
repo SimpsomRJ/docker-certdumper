@@ -1,4 +1,4 @@
-FROM docker:latest
+FROM docker:28.1.1
 
 RUN \
     apk update && \
@@ -17,7 +17,7 @@ RUN ["chmod", "+x", "/usr/bin/dump", "/usr/bin/healthcheck"]
 HEALTHCHECK --interval=30s --timeout=10s --retries=5 \
   CMD ["/usr/bin/healthcheck"]
 
-COPY --from=ldez/traefik-certs-dumper:v2.8.1 /usr/bin/traefik-certs-dumper /usr/bin/traefik-certs-dumper
+COPY --from=ldez/traefik-certs-dumper:v2.10.0 /usr/bin/traefik-certs-dumper /usr/bin/traefik-certs-dumper
 
 VOLUME ["/traefik"]
 VOLUME ["/output"]
